@@ -23,6 +23,7 @@ namespace Microsoft.TemplateEngine.Edge
             private IEngineEnvironmentSettings _environmentSettings;
             private Dictionary<Guid, IInstaller> _installersByGuid = new Dictionary<Guid, IInstaller>();
             private Dictionary<string, IInstaller> _installersByName = new Dictionary<string, IInstaller>();
+            private Dictionary<IManagedTemplatesSource, IInstaller> _templateToInstaller = new Dictionary<IManagedTemplatesSource, IInstaller>();
             private List<ITemplatesSource> _notSupportedSources = new List<ITemplatesSource>();
             private Dictionary<IInstaller, Dictionary<string, IManagedTemplatesSource>> _templatesSources = new Dictionary<IInstaller, Dictionary<string, IManagedTemplatesSource>>();
 
@@ -71,7 +72,7 @@ namespace Microsoft.TemplateEngine.Edge
                 _ = sources ?? throw new ArgumentNullException(nameof(sources));
 
                 var tasks = new List<Task<IReadOnlyList<CheckUpdateResult>>>();
-                foreach (var sourcesGroupedByInstaller in sources.GroupBy(s => s.Installer))
+                foreach (var sourcesGroupedByInstaller in sources.GroupBy(s => _templateToInstaller[s]))
                 {
                     tasks.Add(sourcesGroupedByInstaller.Key.GetLatestVersionAsync(sourcesGroupedByInstaller));
                 }
@@ -93,24 +94,32 @@ namespace Microsoft.TemplateEngine.Edge
                     return new List<InstallResult>();
                 }
 
-                return await Task.WhenAll(installRequests.Select(async installRequest =>
+                var dispoable = await _environmentSettings.SettingsLoader.GlobalSettings.LockAsync(default).ConfigureAwait(false);
+                try
                 {
-                    var installersThatCanInstall = new List<IInstaller>();
-                    foreach (var install in _installersByName.Values)
+                    return await Task.WhenAll(installRequests.Select(async installRequest =>
                     {
-                        if (await install.CanInstallAsync(installRequest).ConfigureAwait(false))
+                        var installersThatCanInstall = new List<IInstaller>();
+                        foreach (var install in _installersByName.Values)
                         {
-                            installersThatCanInstall.Add(install);
+                            if (await install.CanInstallAsync(installRequest).ConfigureAwait(false))
+                            {
+                                installersThatCanInstall.Add(install);
+                            }
                         }
-                    }
-                    if (installersThatCanInstall.Count == 0)
-                    {
-                        return InstallResult.CreateFailure(installRequest, InstallerErrorCode.UnsupportedRequest, $"{installRequest.Identifier} cannot be installed");
-                    }
+                        if (installersThatCanInstall.Count == 0)
+                        {
+                            return InstallResult.CreateFailure(installRequest, InstallerErrorCode.UnsupportedRequest, $"{installRequest.Identifier} cannot be installed");
+                        }
 
-                    IInstaller installer = installersThatCanInstall[0];
-                    return await InstallAsync(installRequest, installer).ConfigureAwait(false);
-                })).ConfigureAwait(false);
+                        IInstaller installer = installersThatCanInstall[0];
+                        return await InstallAsync(installRequest, installer).ConfigureAwait(false);
+                    })).ConfigureAwait(false);
+                }
+                finally
+                {
+                    dispoable.Dispose();
+                }
             }
 
             public async Task<IReadOnlyList<UninstallResult>> UninstallAsync(IEnumerable<IManagedTemplatesSource> sources)
@@ -121,23 +130,40 @@ namespace Microsoft.TemplateEngine.Edge
                     return new List<UninstallResult>();
                 }
 
-                return await Task.WhenAll(sources.Select(async source =>
+                var dispoable = await _environmentSettings.SettingsLoader.GlobalSettings.LockAsync(default).ConfigureAwait(false);
+                try
                 {
-                    UninstallResult result = await source.Installer.UninstallAsync(source).ConfigureAwait(false);
-                    if (result.Success)
+                    return await Task.WhenAll(sources.Select(async source =>
                     {
-                        _templatesSources[source.Installer].Remove(source.Identifier);
-                        _environmentSettings.SettingsLoader.GlobalSettings.Remove(source.Installer.Serialize(source));
-                    }
-                    return result;
-                })).ConfigureAwait(false);
+                        UninstallResult result = await source.Installer.UninstallAsync(source).ConfigureAwait(false);
+                        if (result.Success)
+                        {
+                            _templatesSources[source.Installer].Remove(source.Identifier);
+                            _environmentSettings.SettingsLoader.GlobalSettings.Remove(source.Installer.Serialize(source));
+                        }
+                        return result;
+                    })).ConfigureAwait(false);
+                }
+                finally
+                {
+                    dispoable.Dispose();
+                }
             }
 
             public async Task<IReadOnlyList<UpdateResult>> UpdateAsync(IEnumerable<UpdateRequest> updateRequests)
             {
                 _ = updateRequests ?? throw new ArgumentNullException(nameof(updateRequests));
                 IEnumerable<UpdateRequest> updatesToApply = updateRequests.Where(request => request.Version != request.Source.Version);
-                return await Task.WhenAll(updatesToApply.Select(updateRequest => UpdateAsync(updateRequest))).ConfigureAwait(false);
+
+                var dispoable = await _environmentSettings.SettingsLoader.GlobalSettings.LockAsync(default).ConfigureAwait(false);
+                try
+                {
+                    return await Task.WhenAll(updatesToApply.Select(updateRequest => UpdateAsync(updateRequest))).ConfigureAwait(false);
+                }
+                finally
+                {
+                    dispoable.Dispose();
+                }
             }
 
             private async Task<UpdateResult> UpdateAsync(UpdateRequest updateRequest)
@@ -158,7 +184,7 @@ namespace Microsoft.TemplateEngine.Edge
                 return updateResult;
             }
 
-            private async Task<(InstallerErrorCode, string)> EnsureInstallPrerequisites (string identifier, string version, IInstaller installer, bool update = false)
+            private async Task<(InstallerErrorCode, string)> EnsureInstallPrerequisites(string identifier, string version, IInstaller installer, bool update = false)
             {
                 //check if the source with same identifier is already installed
                 if (_templatesSources[installer].TryGetValue(identifier, out IManagedTemplatesSource sourceToBeUpdated))
@@ -220,6 +246,7 @@ namespace Microsoft.TemplateEngine.Edge
                         if (_templatesSources.TryGetValue(installer, out Dictionary<string, IManagedTemplatesSource> installerSources))
                         {
                             installerSources[managedTemplatesSource.Identifier] = managedTemplatesSource;
+                            _templateToInstaller[managedTemplatesSource] = installer;
                         }
                     }
                     else
