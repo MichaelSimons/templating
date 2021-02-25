@@ -94,7 +94,7 @@ namespace Microsoft.TemplateEngine.Edge
                     return new List<InstallResult>();
                 }
 
-                var dispoable = await _environmentSettings.SettingsLoader.GlobalSettings.LockAsync(default).ConfigureAwait(false);
+                await _environmentSettings.SettingsLoader.GlobalSettings.LockAsync(default).ConfigureAwait(false);
                 try
                 {
                     return await Task.WhenAll(installRequests.Select(async installRequest =>
@@ -105,6 +105,7 @@ namespace Microsoft.TemplateEngine.Edge
                             if (await install.CanInstallAsync(installRequest).ConfigureAwait(false))
                             {
                                 installersThatCanInstall.Add(install);
+                                break;
                             }
                         }
                         if (installersThatCanInstall.Count == 0)
@@ -118,7 +119,7 @@ namespace Microsoft.TemplateEngine.Edge
                 }
                 finally
                 {
-                    dispoable.Dispose();
+                    await _environmentSettings.SettingsLoader.GlobalSettings.UnlockAsync(default).ConfigureAwait(false);
                 }
             }
 
@@ -130,7 +131,7 @@ namespace Microsoft.TemplateEngine.Edge
                     return new List<UninstallResult>();
                 }
 
-                var dispoable = await _environmentSettings.SettingsLoader.GlobalSettings.LockAsync(default).ConfigureAwait(false);
+                await _environmentSettings.SettingsLoader.GlobalSettings.LockAsync(default).ConfigureAwait(false);
                 try
                 {
                     return await Task.WhenAll(sources.Select(async source =>
@@ -146,7 +147,7 @@ namespace Microsoft.TemplateEngine.Edge
                 }
                 finally
                 {
-                    dispoable.Dispose();
+                    await _environmentSettings.SettingsLoader.GlobalSettings.UnlockAsync(default).ConfigureAwait(false);
                 }
             }
 
@@ -155,14 +156,14 @@ namespace Microsoft.TemplateEngine.Edge
                 _ = updateRequests ?? throw new ArgumentNullException(nameof(updateRequests));
                 IEnumerable<UpdateRequest> updatesToApply = updateRequests.Where(request => request.Version != request.Source.Version);
 
-                var dispoable = await _environmentSettings.SettingsLoader.GlobalSettings.LockAsync(default).ConfigureAwait(false);
+                await _environmentSettings.SettingsLoader.GlobalSettings.LockAsync(default).ConfigureAwait(false);
                 try
                 {
                     return await Task.WhenAll(updatesToApply.Select(updateRequest => UpdateAsync(updateRequest))).ConfigureAwait(false);
                 }
                 finally
                 {
-                    dispoable.Dispose();
+                    await _environmentSettings.SettingsLoader.GlobalSettings.UnlockAsync(default).ConfigureAwait(false);
                 }
             }
 
